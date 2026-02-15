@@ -1,0 +1,405 @@
+{
+  "name": "Karaoke Menu Bot v1.0",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": ["message"],
+        "additionalFields": {}
+      },
+      "id": "node-telegram-trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [220, 300],
+      "webhookId": "karaoke-menu-bot-webhook",
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-bot-cred",
+          "name": "Karaoke Bot"
+        }
+      },
+      "notes": "Принимает входящие сообщения от Telegram. Срабатывает на /menu и /start."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-menu",
+              "leftValue": "={{ $json.message.text }}",
+              "rightValue": "/menu",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "condition-start",
+              "leftValue": "={{ $json.message.text }}",
+              "rightValue": "/start",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        }
+      },
+      "id": "node-filter-commands",
+      "name": "Filter Commands",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [440, 300],
+      "notes": "Фильтрует только команды /menu и /start. Остальные сообщения игнорируются."
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1PYWnw6IWPc7qaTjbSAy2YpWcHjfGP8wO__RvEYpAl6o",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "MENU",
+          "mode": "name"
+        },
+        "options": {
+          "range": "A:D"
+        }
+      },
+      "id": "node-read-menu",
+      "name": "Read Menu from Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [660, 200],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      },
+      "notes": "Читает лист MENU (колонки A:D) — категории, названия напитков, описания, цены."
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1PYWnw6IWPc7qaTjbSAy2YpWcHjfGP8wO__RvEYpAl6o",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "USERS",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "user_id",
+              "lookupValue": "={{ $('Telegram Trigger').item.json.message.from.id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-lookup-user",
+      "name": "Lookup User in Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [660, 420],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      },
+      "notes": "Ищет пользователя по user_id в листе USERS для подсчёта визитов."
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "assign-chat-id",
+              "name": "chatId",
+              "value": "={{ $('Telegram Trigger').item.json.message.chat.id }}",
+              "type": "number"
+            },
+            {
+              "id": "assign-user-id",
+              "name": "userId",
+              "value": "={{ $('Telegram Trigger').item.json.message.from.id }}",
+              "type": "number"
+            },
+            {
+              "id": "assign-username",
+              "name": "username",
+              "value": "={{ $('Telegram Trigger').item.json.message.from.username || $('Telegram Trigger').item.json.message.from.first_name }}",
+              "type": "string"
+            },
+            {
+              "id": "assign-menu-text",
+              "name": "menuText",
+              "value": "🎤 *Караоке-бар — Меню*\n\nВыберите категорию:",
+              "type": "string"
+            },
+            {
+              "id": "assign-buttons",
+              "name": "inlineKeyboard",
+              "value": "[[{\"text\":\"🍹 Напитки\",\"callback_data\":\"cat_drinks\"}],[{\"text\":\"🍕 Закуски\",\"callback_data\":\"cat_snacks\"}],[{\"text\":\"🍸 Коктейли\",\"callback_data\":\"cat_cocktails\"}]]",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-set-buttons",
+      "name": "Set Menu Buttons",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [880, 200],
+      "notes": "Формирует данные для ответа: chatId, текст меню и InlineKeyboard с 3 категориями (Напитки/Закуски/Коктейли)."
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $json.chatId }}",
+        "text": "={{ $json.menuText }}",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "reply_markup": {
+            "inline_keyboard": "={{ JSON.parse($json.inlineKeyboard) }}"
+          }
+        }
+      },
+      "id": "node-send-menu",
+      "name": "Send Menu Keyboard",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1100, 200],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-bot-cred",
+          "name": "Karaoke Bot"
+        }
+      },
+      "notes": "Отправляет сообщение с InlineKeyboard (3 кнопки категорий) в чат пользователю."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-new-user",
+              "leftValue": "={{ $('Lookup User in Sheets').item.json.user_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "node-if-new-user",
+      "name": "IF New User?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [880, 420],
+      "notes": "Проверяет, найден ли user_id в USERS. True = новый пользователь, False = существующий."
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1PYWnw6IWPc7qaTjbSAy2YpWcHjfGP8wO__RvEYpAl6o",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "USERS",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "user_id": "={{ $('Telegram Trigger').item.json.message.from.id }}",
+            "username": "={{ $('Telegram Trigger').item.json.message.from.username || $('Telegram Trigger').item.json.message.from.first_name }}",
+            "first_seen": "={{ $now.toISO() }}",
+            "visits": 1
+          }
+        },
+        "options": {}
+      },
+      "id": "node-append-new-user",
+      "name": "Append New User",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1100, 360],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      },
+      "notes": "Новый пользователь — добавляет строку в USERS: user_id, username, first_seen, visits=1."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1PYWnw6IWPc7qaTjbSAy2YpWcHjfGP8wO__RvEYpAl6o",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "USERS",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "user_id": "={{ $('Telegram Trigger').item.json.message.from.id }}",
+            "visits": "={{ Number($('Lookup User in Sheets').item.json.visits) + 1 }}"
+          }
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "id": "node-update-user",
+      "name": "Update User Visits",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1100, 500],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "google-sheets-cred",
+          "name": "Google Sheets"
+        }
+      },
+      "notes": "Существующий пользователь — обновляет visits+1 в строке USERS по user_id."
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Filter Commands",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Commands": {
+      "main": [
+        [
+          {
+            "node": "Read Menu from Sheets",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Lookup User in Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Menu from Sheets": {
+      "main": [
+        [
+          {
+            "node": "Set Menu Buttons",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Menu Buttons": {
+      "main": [
+        [
+          {
+            "node": "Send Menu Keyboard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup User in Sheets": {
+      "main": [
+        [
+          {
+            "node": "IF New User?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF New User?": {
+      "main": [
+        [
+          {
+            "node": "Append New User",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Update User Visits",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "",
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "saveExecutionProgress": true,
+    "timezone": "Europe/Moscow"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "telegram-bot"
+    },
+    {
+      "name": "karaoke"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-02-15T00:00:00.000Z",
+  "versionId": "1.0.0",
+  "active": true
+}
