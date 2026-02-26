@@ -1084,6 +1084,7 @@ function buildDrinkCatsKeyboard() {
     if (cats[i + 1]) row.push(Markup.button.callback(cats[i + 1].text, cats[i + 1].data));
     rows.push(row);
   }
+  rows.push([Markup.button.callback('◀️ Назад', 'main_menu')]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -2054,24 +2055,66 @@ bot.action('hookah_back', async (ctx) => {
 });
 
 // ============ МЕНЮ (ЕДА) ============
+
+// Статическая карта фото для блюд: имя_в_БД → путь к файлу
+const FOOD_PHOTOS = {
+  // Салаты
+  'Греческий салат':                   'food/Салаты/Греческий салат.jpg',
+  'Салат с креветками':                'food/Салаты/Салат с креветками.jpg',
+  'С хрустящими баклажанами':          'food/Салаты/Салат с хрустящим баклажаном.jpg',
+  // Закуски
+  'Ассорти сыров':                     'food/Закуски/Ассорти сыров.jpg',
+  'Вяленые томаты':                    'food/Закуски/Вяленые томаты.jpg',
+  'Маринады':                          'food/Закуски/Маринады.jpg',
+  'Оливки-гигант':                     'food/Закуски/Оливки Гигант.jpg',
+  'Сало':                              'food/Закуски/Сало.jpg',
+  'Сырные палочки':                    'food/Закуски/Сырные палочки.jpg',
+  'Креветки Чешуя Дракона':            'food/Закуски/Креветки Чешуя дракона.jpg',
+  // Горячее
+  'Стейк из лосося':                   'food/Горячее/Стейк из лосося со сливочным соусом.jpg',
+  // Паста
+  'Казаречче с лососем':               'food/Паста/Казаречче с лососем.jpg',
+  'Ньокки с цыпленком и шпинатом':     'food/Паста/Ньокки с цыпленком и шпинатом.jpg',
+  // Роллы
+  'Запеченный ролл с лососем':         'food/Роллы/Запеченный ролл с лососем.jpg',
+  'Калифорния':                        'food/Роллы/Калифорния.jpg',
+  'Ролл с угрем и снежным крабом':     'food/Роллы/Ролл с угрем и снежным крабом.jpg',
+  'Темпура с лососем':                 'food/Роллы/Темпура с хрустящей корочкой и лососем.jpg',
+  'Филадельфия':                       'food/Роллы/Филадельфия.jpg',
+};
+
+// Кеш карточек еды (сбрасывается при рестарте, наполняется при открытии категорий)
+const foodCardCache = {};
+let foodCardNextId = 1;
+function cacheFoodItem(name, price, category, description) {
+  for (const [id, item] of Object.entries(foodCardCache)) {
+    if (item.name === name && item.category === category) return parseInt(id);
+  }
+  const id = foodCardNextId++;
+  foodCardCache[id] = { name, price, category, description, photo: FOOD_PHOTOS[name] || null };
+  return id;
+}
+
+function buildFoodCatsKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('🥗 САЛАТЫ', 'food_Салаты'), Markup.button.callback('🍖 ЗАКУСКИ', 'food_Закуски'), Markup.button.callback('🍳 ГОРЯЧЕЕ', 'food_Горячее')],
+    [Markup.button.callback('🍝 ПАСТА', 'food_Паста'), Markup.button.callback('🍣 РОЛЛЫ', 'food_Роллы'), Markup.button.callback('🍰 ДЕСЕРТЫ', 'food_Десерты')],
+    [Markup.button.callback('◀️ Назад', 'main_menu')],
+  ]);
+}
+
 bot.hears('🍽 Меню', async (ctx) => {
   endSession(ctx.from.id);
-  const categories = [
-    { text: '🥗 САЛАТЫ', data: 'food_Салаты' },
-    { text: '🍖 ЗАКУСКИ', data: 'food_Закуски' },
-    { text: '🍳 ГОРЯЧЕЕ', data: 'food_Горячее' },
-    { text: '🍝 ПАСТА', data: 'food_Паста' },
-    { text: '🍣 РОЛЛЫ', data: 'food_Роллы' },
-    { text: '🍰 ДЕСЕРТЫ', data: 'food_Десерты' },
-  ];
-  const buttons = [];
-  for (let i = 0; i < categories.length; i += 3) {
-    const row = [Markup.button.callback(categories[i].text, categories[i].data)];
-    if (categories[i + 1]) row.push(Markup.button.callback(categories[i + 1].text, categories[i + 1].data));
-    if (categories[i + 2]) row.push(Markup.button.callback(categories[i + 2].text, categories[i + 2].data));
-    buttons.push(row);
+  await ctx.reply('🍽 МЕНЮ — выберите категорию:', buildFoodCatsKeyboard());
+});
+
+bot.action('food_cats', async (ctx) => {
+  await ctx.answerCbQuery();
+  try {
+    await ctx.editMessageText('🍽 МЕНЮ — выберите категорию:', buildFoodCatsKeyboard());
+  } catch (e) {
+    await ctx.reply('🍽 МЕНЮ — выберите категорию:', buildFoodCatsKeyboard());
   }
-  await ctx.reply('🍽 МЕНЮ — выберите категорию:', Markup.inlineKeyboard(buttons));
 });
 
 bot.action(/^food_(.+)$/, async (ctx) => {
@@ -2080,38 +2123,93 @@ bot.action(/^food_(.+)$/, async (ctx) => {
 
   try {
     const { rows } = await pool.query(
-      `SELECT name, price FROM menu WHERE category = $1 ORDER BY price`,
+      `SELECT name, price, description FROM menu WHERE category = $1 ORDER BY price`,
       [category]
     );
     if (rows.length === 0) {
-      await ctx.reply('Пока пусто в этой категории');
+      await ctx.reply('Пока пусто в этой категории', Markup.inlineKeyboard([[Markup.button.callback('◀️ Назад', 'food_cats')]]));
       return;
     }
 
     const buttons = [];
-    for (let i = 0; i < rows.length; i += 3) {
+    for (let i = 0; i < rows.length; i += 2) {
       const row = [];
-      for (let j = 0; j < 3; j++) {
+      for (let j = 0; j < 2; j++) {
         if (rows[i + j]) {
           const item = rows[i + j];
-          row.push(Markup.button.callback(
-            `${item.name}\n${item.price}₽`,
-            `add_${item.name}_${item.price}`
-          ));
+          if (FOOD_PHOTOS[item.name]) {
+            const cacheId = cacheFoodItem(item.name, item.price, category, item.description);
+            row.push(Markup.button.callback(`📸 ${item.name} — ${item.price}₽`, `food_card_${cacheId}`));
+          } else {
+            row.push(Markup.button.callback(`${item.name} — ${item.price}₽`, `add_${item.name}_${item.price}`));
+          }
         }
       }
       buttons.push(row);
     }
+    buttons.push([Markup.button.callback('◀️ Назад к категориям', 'food_cats')]);
 
     const emoji = { Салаты: '🥗', Закуски: '🍖', Горячее: '🍳', Паста: '🍝', Роллы: '🍣', Десерты: '🍰' };
-    await ctx.reply(
-      `${emoji[category] || '🍽'} ${category.toUpperCase()} — нажмите для добавления в корзину:`,
-      Markup.inlineKeyboard(buttons)
-    );
+    const text = `${emoji[category] || '🍽'} ${category.toUpperCase()}\n\n📸 — есть фото, нажмите для карточки\nОстальные — добавляются в корзину сразу`;
+    try {
+      await ctx.editMessageText(text, Markup.inlineKeyboard(buttons));
+    } catch (e) {
+      await ctx.reply(text, Markup.inlineKeyboard(buttons));
+    }
   } catch (e) {
     console.error('food cat error:', e.message);
     await ctx.reply('Ошибка загрузки меню');
   }
+});
+
+// Карточка блюда с фото
+bot.action(/^food_card_(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const item = foodCardCache[parseInt(ctx.match[1])];
+  if (!item) { await ctx.reply('Товар не найден'); return; }
+
+  let caption = `<b>${item.name}</b>\n💰 <b>${item.price}₽</b>`;
+  if (item.description) caption += `\n\n${item.description}`;
+  const qty = (getCart(ctx.from.id).find(c => c.name === item.name) || {}).qty || 0;
+  if (qty > 0) caption += `\n\n🛒 В корзине: ${qty} шт.`;
+
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('➕ ДОБАВИТЬ В КОРЗИНУ', `food_add_${ctx.match[1]}`)],
+    [Markup.button.callback('◀️ Назад', `food_${item.category}`)],
+  ]);
+
+  const photoUrl = buildPhotoUrl(item.photo);
+  try {
+    await ctx.editMessageMedia(
+      { type: 'photo', media: photoUrl, caption, parse_mode: 'HTML' },
+      { reply_markup: keyboard.reply_markup }
+    );
+  } catch (e) {
+    try {
+      await ctx.replyWithPhoto({ url: photoUrl }, { caption, parse_mode: 'HTML', ...keyboard });
+    } catch (e2) {
+      await ctx.reply(caption, { parse_mode: 'HTML', ...keyboard });
+    }
+  }
+});
+
+// Добавить блюдо в корзину из карточки
+bot.action(/^food_add_(\d+)$/, async (ctx) => {
+  const item = foodCardCache[parseInt(ctx.match[1])];
+  if (!item) { await ctx.answerCbQuery('Товар не найден'); return; }
+  addToCart(ctx.from.id, { name: item.name, price: item.price });
+  await ctx.answerCbQuery(`✅ ${item.name} добавлен (итого ${cartTotal(ctx.from.id)}₽)`);
+  // Обновить карточку (показать qty)
+  const qty = (getCart(ctx.from.id).find(c => c.name === item.name) || {}).qty || 0;
+  let caption = `<b>${item.name}</b>\n💰 <b>${item.price}₽</b>`;
+  if (item.description) caption += `\n\n${item.description}`;
+  if (qty > 0) caption += `\n\n🛒 В корзине: ${qty} шт.`;
+  try {
+    await ctx.editMessageCaption(caption, { parse_mode: 'HTML', reply_markup: Markup.inlineKeyboard([
+      [Markup.button.callback('➕ ДОБАВИТЬ В КОРЗИНУ', `food_add_${ctx.match[1]}`)],
+      [Markup.button.callback('◀️ Назад', `food_${item.category}`)],
+    ]).reply_markup });
+  } catch (e) {}
 });
 
 // ============ ИИ АГЕНТ ============
@@ -2136,6 +2234,12 @@ bot.hears('🤖 ИИ Агент', async (ctx) => {
       [Markup.button.callback('❌ Закрыть чат', 'cancel_agent')],
     ])
   );
+});
+
+bot.action('main_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  endSession(ctx.from.id);
+  await ctx.reply('Главное меню:', mainKeyboard);
 });
 
 bot.action('cancel_agent', async (ctx) => {
