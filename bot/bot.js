@@ -5,9 +5,13 @@ const https = require('https');
 // ============ CONFIG ============
 const BOT_TOKEN = process.env.BOT_TOKEN || '8301245345:AAHx6nEzBFyB_-3BYG8BssEDNGoG7CvDwfA';
 const PHOTO_BASE = process.env.PHOTO_BASE || 'https://46.173.25.198.nip.io/photos';
-const OPENROUTER_KEY = process.env.OPENROUTER_KEY || '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';
+// Build photo URL with proper encoding for Cyrillic and spaces
+function buildPhotoUrl(path) {
+  return PHOTO_BASE + '/' + path.split('/').map(s => encodeURIComponent(s)).join('/');
+}
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_KEY || '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';
 const MANAGER_CHAT_ID = process.env.MANAGER_CHAT_ID || '796215905';
-const SUPPORT_CHAT_ID = process.env.SUPPORT_CHAT_ID || '-5145396903';
+const SUPPORT_CHAT_ID = process.env.SUPPORT_CHAT_ID || '-1003748230152';
 const AI_MODEL = 'anthropic/claude-3.5-haiku';
 
 const pool = new Pool({
@@ -125,6 +129,10 @@ function cartTotal(userId) {
   return getCart(userId).reduce((sum, i) => sum + i.price * i.qty, 0);
 }
 
+function clearCart(userId) {
+  carts[userId] = [];
+}
+
 function cartText(userId) {
   const cart = getCart(userId);
   if (cart.length === 0) return '🛒 Корзина пуста';
@@ -135,7 +143,7 @@ function cartText(userId) {
 }
 
 // ============ OPENROUTER AI ============
-function getBookingSystemPrompt(bookingDate, bookingTime) {
+function getBookingSystemPrompt(bookingDate, bookingTime, hasCart = false) {
   const hasDateTime = !!(bookingDate && bookingTime);
   let dateTimeStr = '';
   if (hasDateTime) {
@@ -148,12 +156,16 @@ function getBookingSystemPrompt(bookingDate, bookingTime) {
     : '';
 
   const taskList = hasDateTime
-    ? `1. Количество гостей\n2. Имя для бронирования\n3. Номер телефона\n4. Готовы ли внести депозит (для VIP)\n5. Предзаказ (спроси В КОНЦЕ)`
-    : `1. Дата и время (формат ДД.ММ ЧЧ:ММ)\n2. Количество гостей\n3. Имя для бронирования\n4. Номер телефона\n5. Готовы ли внести депозит (для VIP)\n6. Предзаказ (спроси В КОНЦЕ)`;
+    ? `1. Количество гостей\n2. Имя для бронирования\n3. Номер телефона\n4. Предзаказ (спроси В КОНЦЕ)`
+    : `1. Дата и время (формат ДД.ММ ЧЧ:ММ)\n2. Количество гостей\n3. Имя для бронирования\n4. Номер телефона\n5. Предзаказ (спроси В КОНЦЕ)`;
 
   const dateRule = hasDateTime
     ? `- НЕ спрашивай дату и время — зафиксированы: ${dateTimeStr}`
     : `- ПЕРВЫМ ДЕЛОМ спроси дату и время визита`;
+
+  const cartRule = hasCart
+    ? `- Гость упомянул товары в корзине — при вопросе о предзаказе ОБЯЗАТЕЛЬНО скажи: "У вас уже есть позиции в корзине. Для предзаказа потребуется внести предоплату — подтвердите, и мы оформим вместе с бронью."`
+    : `- ПОСЛЕДНИЙ вопрос после сбора всех данных: "Хотите добавить предзаказ напитков или кальяна? Я покажу меню прямо сейчас."`;
 
   return `Ты — ИИ-ассистент караоке-клуба 7Sky (Санкт-Петербург, Ковенский пер., 5, 7 этаж).
 Твоя задача — помочь гостю забронировать комнату или стол.
@@ -164,13 +176,15 @@ function getBookingSystemPrompt(bookingDate, bookingTime) {
 - 40 000+ песен в базе
 
 КОМНАТЫ:
-- VIP-кабинка 18 персон: 3900₽/час (65₽/мин), поминутная тарификация
-- VIP-кабинка 10 персон: 3000₽/час (50₽/мин), 2 комнаты
-- Кабинка 8 персон: 2700₽/час (45₽/мин), 5 комнат
-- Общий зал: 500₽ за песню, до 40 человек, 8 столов
+- Комната 1 (до 8 чел): 2700₽/час (45₽/мин)
+- Комната 2 (до 10 чел): 3000₽/час (50₽/мин)
+- Комната 3 (до 8 чел): 2700₽/час (45₽/мин)
+- Комната 4 (до 10 чел): 3000₽/час (50₽/мин)
+- Комната до 18 человек: 3900₽/час (65₽/мин), поминутная тарификация
+- Общий зал: 500₽ за песню, до 40 человек, 6 столов
 
 ДЕПОЗИТ:
-- Бронь бесплатна, но для VIP-кабинок рекомендуем внести депозит 50% от стоимости первого часа
+- Бронь бесплатна, но рекомендуем внести депозит 50% от стоимости первого часа
 - Депозит можно внести переводом или на месте
 
 АКЦИИ:
@@ -190,9 +204,9 @@ ${dateRule}
 - Если данные неполные — мягко уточни
 - НЕ выдумывай информацию, которой нет выше
 - Отвечай ТОЛЬКО на русском языке
-- ПОСЛЕДНИЙ вопрос после сбора всех данных: "Хотите добавить предзаказ напитков или кальяна? Я покажу меню прямо сейчас."
+${cartRule}
 
-Когда ВСЕ данные собраны и гость ХОЧЕТ предзаказ, ответь РОВНО в таком формате:
+Когда ВСЕ данные собраны и гость ХОЧЕТ предзаказ (или подтверждает товары из корзины), ответь РОВНО в таком формате:
 PREORDER_OFFER
 тип: [комната/стол]
 место: [название]
@@ -251,10 +265,10 @@ const AGENT_SYSTEM_PROMPT = `Ты — дружелюбный ИИ-ассисте
 - 40 000+ песен в базе
 
 КОМНАТЫ И ЦЕНЫ:
-- VIP-кабинка 18 персон: 3900₽/час (65₽/мин)
-- VIP-кабинка 10 персон: 3000₽/час (50₽/мин), 2 комнаты
-- Кабинка 8 персон: 2700₽/час (45₽/мин), 5 комнат
-- Общий зал: 500₽ за песню, до 40 человек
+- Комната 1, 3 (до 8 чел): 2700₽/час (45₽/мин)
+- Комната 2, 4 (до 10 чел): 3000₽/час (50₽/мин)
+- Комната до 18 человек: 3900₽/час (65₽/мин)
+- Общий зал: 500₽ за песню, до 40 человек, 6 столов
 
 АКЦИИ:
 - Пн-Чт скидка 20% на кабинки
@@ -361,6 +375,7 @@ function getSession(userId) {
       date: null,
       time: null,
       messages: [],
+      pendingBookingData: null,
     };
   }
   return sessions[userId];
@@ -375,13 +390,24 @@ function startBookingSession(userId, roomName, date, time) {
   session.date = date || null;
   session.time = time || null;
 
+  // Передаём корзину как контекст для AI
+  const cart = getCart(userId);
+  const hasCart = cart.length > 0;
+  const cartSummary = hasCart
+    ? cart.map(i => `${i.name} x${i.qty} (${i.price * i.qty}₽)`).join(', ') + ` — итого ${cartTotal(userId)}₽`
+    : null;
+
   let userMsg = `Хочу забронировать: ${roomName}`;
   if (date && time) {
     const [y, m, d] = date.split('-');
     userMsg += `\nДата и время уже выбраны: ${d}.${m} в ${time}`;
   }
+  if (hasCart) {
+    userMsg += `\nУ меня уже есть товары в корзине: ${cartSummary}`;
+  }
+
   session.messages = [
-    { role: 'system', content: getBookingSystemPrompt(date, time) },
+    { role: 'system', content: getBookingSystemPrompt(date, time, hasCart) },
     { role: 'user', content: userMsg },
   ];
   return session;
@@ -420,6 +446,7 @@ function endSession(userId) {
     sessions[userId].ticketId = null;
     sessions[userId].date = null;
     sessions[userId].time = null;
+    sessions[userId].pendingBookingData = null;
   }
 }
 
@@ -569,61 +596,6 @@ async function handleAIMessage(ctx, text) {
 }
 
 async function handleBookingReply(ctx, aiReply, session) {
-  // Вспомогательная: создать тикет + отправить в SUPPORT_CHAT
-  async function sendBookingTicket(bookingId, bookingData, cart) {
-    const ticketText = [
-      `Место: ${bookingData['место'] || session.room}`,
-      `Дата: ${bookingData['дата'] || '?'}`,
-      `Гостей: ${bookingData['гости'] || '?'}`,
-      `Телефон: ${bookingData['телефон'] || '?'}`,
-      `Депозит: ${bookingData['депозит'] || '?'}`,
-    ].join(', ');
-
-    let ticketId = null;
-    try {
-      const tr = await pool.query(
-        `INSERT INTO support_tickets (user_id, username, cabin_name, request_text, status)
-         VALUES ($1, $2, $3, $4, 'open') RETURNING id`,
-        [ctx.from.id, ctx.from.username || '',
-         bookingData['место'] || session.room || '', ticketText]
-      );
-      ticketId = tr.rows[0].id;
-      session.ticketId = ticketId;
-    } catch (e) { console.error('booking ticket create:', e.message); }
-
-    if (!ticketId) return;
-    const ticketRef = ` #${ticketId}`;
-    let staffText =
-      `📅 НОВАЯ БРОНЬ${ticketRef} — 🟡 не подтверждена\n\n` +
-      `👤 ${bookingData['имя'] || ctx.from.first_name} (@${ctx.from.username || 'нет'})\n` +
-      `📞 ${bookingData['телефон'] || 'не указан'}\n` +
-      `🏠 ${bookingData['место'] || session.room}\n` +
-      `📅 ${bookingData['дата'] || '?'}\n` +
-      `👥 ${bookingData['гости'] || '?'} чел.\n` +
-      `💰 Депозит: ${bookingData['депозит'] || '?'}`;
-
-    if (cart && cart.length > 0) {
-      const total = cart.reduce((s, i) => s + i.price * i.qty, 0);
-      staffText += '\n\n🛒 ПРЕДЗАКАЗ:\n';
-      cart.forEach(i => { staffText += `• ${i.name} x${i.qty} — ${i.price * i.qty}₽\n`; });
-      staffText += `💰 Итого: ${total}₽`;
-    }
-
-    try {
-      const sent = await bot.telegram.sendMessage(SUPPORT_CHAT_ID, staffText, {
-        reply_markup: Markup.inlineKeyboard([
-          [Markup.button.callback(`✏️ Ответить${ticketRef}`, `reply_ticket_${ticketId}`)],
-          [Markup.button.callback(`✅ Закрыть${ticketRef}`, `close_ticket_${ticketId}`)],
-        ]).reply_markup,
-      });
-      supportMsgToGuest[sent.message_id] = ctx.from.id;
-      await pool.query(
-        `UPDATE support_tickets SET staff_card_msg_id = $1 WHERE id = $2`,
-        [sent.message_id, ticketId]
-      ).catch(() => {});
-    } catch (e) { console.error('booking ticket send:', e.message); }
-  }
-
   // Нормализуем дату из сессии если AI не вернул её
   function fillDateFromSession(data) {
     if (!data['дата'] && session.date) {
@@ -632,64 +604,76 @@ async function handleBookingReply(ctx, aiReply, session) {
     }
   }
 
-  // Гость хочет предзаказ
-  if (aiReply.includes('PREORDER_OFFER')) {
-    const bookingData = parseBookingData(aiReply.replace('PREORDER_OFFER', ''));
+  // Общий обработчик финала (BOOKING_COMPLETE или PREORDER_OFFER)
+  if (aiReply.includes('PREORDER_OFFER') || aiReply.includes('BOOKING_COMPLETE')) {
+    const isPreorder = aiReply.includes('PREORDER_OFFER');
+    const marker = isPreorder ? 'PREORDER_OFFER' : 'BOOKING_COMPLETE';
+    const bookingData = parseBookingData(aiReply.replace(marker, ''));
     fillDateFromSession(bookingData);
     const bookingId = await saveBooking(ctx.from, bookingData);
     await notifyManager(ctx.from, bookingData);
     session.bookingId = bookingId;
     session.active = false;
 
-    // Показываем экран предзаказа (тикет будет создан при отправке preorder_submit)
-    await ctx.reply(
-      `✅ Данные бронирования приняты!\n\n` +
+    const cart = getCart(ctx.from.id);
+    const bookingSummary =
       `🏠 ${bookingData['место'] || session.room}\n` +
       `📆 ${bookingData['дата'] || '?'}\n` +
-      `👥 ${bookingData['гости'] || '?'} чел.\n\n` +
-      `🛒 Выберите напитки и кальян для предзаказа, затем нажмите «✅ Отправить заявку»`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback('🍸 КОКТЕЙЛИ', 'precat_ck'), Markup.button.callback('✨ АВТОРСКИЕ', 'precat_av')],
-        [Markup.button.callback('🍷 ВИНА', 'precat_cw'), Markup.button.callback('🥃 КРЕПКОЕ', 'precat_cs')],
-        [Markup.button.callback('🍺 ПИВО', 'precat_cp'), Markup.button.callback('🔥 КАЛЬЯН', 'precat_hookah')],
-        [Markup.button.callback(`✅ Отправить заявку`, `preorder_submit_${bookingId}`)],
-        [Markup.button.callback('❌ Отменить предзаказ', 'booking_done')],
-      ])
-    );
-    return true;
-  }
-
-  // Гость не хочет предзаказ — обычное завершение
-  if (aiReply.includes('BOOKING_COMPLETE')) {
-    const bookingData = parseBookingData(aiReply);
-    fillDateFromSession(bookingData);
-    const bookingId = await saveBooking(ctx.from, bookingData);
-    await notifyManager(ctx.from, bookingData);
-    await sendBookingTicket(bookingId, bookingData, null);
-
-    session.bookingId = bookingId;
-    session.active = false;
-
-    await ctx.reply(
-      '✅ Заявка отправлена в рабочий чат!\n\n' +
-      `🏠 ${bookingData['место'] || session.room}\n` +
-      `📆 ${bookingData['дата'] || 'уточним'}\n` +
       `👥 ${bookingData['гости'] || '?'} чел.\n` +
-      `👤 ${bookingData['имя'] || ''}\n\n` +
-      '🟡 Статус: не подтверждена\nМенеджер свяжется для подтверждения.',
-      Markup.inlineKeyboard([
-        [Markup.button.callback('🛒 Добавить предзаказ', `preorder_${bookingId}`)],
-        [Markup.button.callback('💳 ПРЕДОПЛАТА', `prepay_${bookingId}`)],
-        [Markup.button.callback('✅ ГОТОВО', 'booking_done')],
-      ])
-    );
+      `👤 ${bookingData['имя'] || ''}`;
+
+    // Если в корзине уже есть товары — спрашиваем через кнопки
+    if (cart.length > 0) {
+      const total = cartTotal(ctx.from.id);
+      const cartList = cart.map(i => `• ${i.name} x${i.qty} — ${i.price * i.qty}₽`).join('\n');
+      session.pendingBookingData = bookingData;
+
+      await ctx.reply(
+        `✅ Данные бронирования приняты!\n\n${bookingSummary}\n\n` +
+        `🛒 В вашей корзине:\n${cartList}\n💰 Итого: ${total}₽\n\n` +
+        `⚠️ Для предзаказа потребуется предоплата.\nДобавить позиции к бронированию?`,
+        Markup.inlineKeyboard([
+          [Markup.button.callback('✅ Да, добавить предзаказ', `cart_confirm_${bookingId}`)],
+          [Markup.button.callback('❌ Нет, без предзаказа', `cart_skip_${bookingId}`)],
+        ])
+      );
+      return true;
+    }
+
+    // Корзина пуста
+    if (isPreorder) {
+      // Гость хочет выбрать предзаказ из меню
+      await ctx.reply(
+        `✅ Данные приняты!\n\n${bookingSummary}\n\n` +
+        `🛒 Выберите напитки и кальян для предзаказа, затем нажмите «✅ Отправить заявку»`,
+        Markup.inlineKeyboard([
+          [Markup.button.callback('🍸 КОКТЕЙЛИ', 'precat_ck'), Markup.button.callback('✨ АВТОРСКИЕ', 'precat_av')],
+          [Markup.button.callback('🍷 ВИНА', 'precat_cw'), Markup.button.callback('🥃 КРЕПКОЕ', 'precat_cs')],
+          [Markup.button.callback('🍺 ПИВО', 'precat_cp'), Markup.button.callback('🔥 КАЛЬЯН', 'precat_hookah')],
+          [Markup.button.callback(`✅ Отправить заявку`, `preorder_submit_${bookingId}`)],
+          [Markup.button.callback('❌ Без предзаказа', 'booking_done')],
+        ])
+      );
+    } else {
+      // Гость не хочет предзаказ — сразу отправляем тикет
+      const ticketId = await createBookingTicket(ctx.from, bookingId, bookingData, session.room, null);
+      if (ticketId) session.ticketId = ticketId;
+
+      await ctx.reply(
+        `✅ Заявка отправлена!\n\n${bookingSummary}\n\n` +
+        `🟡 Статус: не подтверждена\nМенеджер свяжется для подтверждения.`,
+        Markup.inlineKeyboard([
+          [Markup.button.callback('🛒 Добавить предзаказ', `preorder_${bookingId}`)],
+          [Markup.button.callback('✅ ГОТОВО', 'booking_done')],
+        ])
+      );
+    }
     return true;
   }
 
+  // Обычный ответ AI (ещё собирает данные) — без кнопок, гость просто отвечает текстом
   const cleanReply = aiReply.replace('BOOKING_COMPLETE', '').replace('PREORDER_OFFER', '').trim();
-  await ctx.reply('🤖 ' + cleanReply, Markup.inlineKeyboard([
-    [Markup.button.callback('❌ Отменить бронирование', 'cancel_booking')],
-  ]));
+  await ctx.reply('🤖 ' + cleanReply);
   return true;
 }
 
@@ -942,6 +926,63 @@ async function notifyManager(from, data) {
   }
 }
 
+// Создать тикет + отправить карточку в рабочий чат
+async function createBookingTicket(from, bookingId, bookingData, roomFallback, cart) {
+  const venueName = bookingData['место'] || roomFallback || '';
+  const venueType = bookingData['тип'] || (venueName.toLowerCase().includes('стол') ? 'Стол' : 'Комната');
+  const venueObj = ROOMS.find(r => r.name === venueName) || TABLES.find(t => t.name === venueName || venueName.includes(t.name));
+  const capacity = venueObj ? `до ${venueObj.capacity} чел.` : '?';
+
+  let ticketId = null;
+  try {
+    const tr = await pool.query(
+      `INSERT INTO support_tickets (user_id, username, cabin_name, request_text, status)
+       VALUES ($1, $2, $3, $4, 'open') RETURNING id`,
+      [from.id, from.username || '', venueName,
+       `${venueType}, ${capacity}, ${bookingData['дата'] || '?'}, ${bookingData['гости'] || '?'} гостей`]
+    );
+    ticketId = tr.rows[0].id;
+  } catch (e) { console.error('createBookingTicket insert:', e.message); }
+
+  if (!ticketId) return null;
+
+  let staffText =
+    `📅 НОВАЯ БРОНЬ #${ticketId} — 🟡 ожидает подтверждения\n\n` +
+    `🏠 ${venueName}\n` +
+    `👥 Вместимость: ${capacity}\n` +
+    `📆 ${bookingData['дата'] || '?'}\n` +
+    `👤 ${bookingData['имя'] || from.first_name} (@${from.username || 'нет'})\n` +
+    `📞 ${bookingData['телефон'] || 'не указан'}\n` +
+    `🟣 Гостей: ${bookingData['гости'] || '?'}\n` +
+    `💰 Депозит: ${bookingData['депозит'] || '?'}`;
+
+  if (cart && cart.length > 0) {
+    const total = cart.reduce((s, i) => s + i.price * i.qty, 0);
+    staffText += '\n\n🛒 ПРЕДЗАКАЗ:\n';
+    cart.forEach(i => { staffText += `• ${i.name} x${i.qty} — ${i.price * i.qty}₽\n`; });
+    staffText += `💰 Итого предзаказа: ${total}₽`;
+  }
+
+  try {
+    const sent = await bot.telegram.sendMessage(SUPPORT_CHAT_ID, staffText, {
+      reply_markup: Markup.inlineKeyboard([
+        [
+          Markup.button.callback(`✅ Подтвердить`, `confirm_booking_${ticketId}`),
+          Markup.button.callback(`❌ Отклонить`, `reject_booking_${ticketId}`),
+        ],
+        [Markup.button.callback(`✏️ Написать гостю #${ticketId}`, `reply_ticket_${ticketId}`)],
+      ]).reply_markup,
+    });
+    supportMsgToGuest[sent.message_id] = from.id;
+    await pool.query(
+      `UPDATE support_tickets SET staff_card_msg_id = $1 WHERE id = $2`,
+      [sent.message_id, ticketId]
+    ).catch(() => {});
+  } catch (e) { console.error('createBookingTicket send:', e.message); }
+
+  return ticketId;
+}
+
 async function getLastBooking(userId) {
   try {
     const { rows } = await pool.query(
@@ -1019,6 +1060,11 @@ async function sendMainMenu(ctx) {
 }
 
 bot.start(sendMainMenu);
+
+// Служебная команда для получения ID чата (для настройки рабочего чата)
+bot.hears('/chatid', async (ctx) => {
+  await ctx.reply(`Chat ID: \`${ctx.chat.id}\`\nUser ID: \`${ctx.from.id}\``, { parse_mode: 'Markdown' });
+});
 
 // ============ НАПИТКИ ============
 function buildDrinkCatsKeyboard() {
@@ -1340,12 +1386,16 @@ bot.action('cart_clear', async (ctx) => {
 });
 
 // ============ БРОНИРОВАНИЕ ============
+function bookingMenuKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('🛏️ КОМНАТЫ', 'book_rooms'), Markup.button.callback('🍽️ ОБЩИЙ ЗАЛ', 'book_hall')],
+    [Markup.button.callback('💬 Чат с персоналом', 'booking_support')],
+  ]);
+}
+
 bot.hears('🛋️ Бронирование', async (ctx) => {
   endSession(ctx.from.id);
-  const kb = Markup.inlineKeyboard([
-    [Markup.button.callback('🛏️ КОМНАТЫ', 'book_rooms')],
-    [Markup.button.callback('🍽️ ОБЩИЙ ЗАЛ', 'book_hall')],
-  ]);
+  const kb = bookingMenuKeyboard();
   try {
     await ctx.replyWithPhoto(
       { url: `${PHOTO_BASE}/banner_booking.png` },
@@ -1356,53 +1406,164 @@ bot.hears('🛋️ Бронирование', async (ctx) => {
   }
 });
 
+bot.action('back_to_booking', async (ctx) => {
+  await ctx.answerCbQuery();
+  endSession(ctx.from.id);
+  const text = '📅 БРОНИРОВАНИЕ\n\nВыберите тип:';
+  const kb = bookingMenuKeyboard();
+  try {
+    await ctx.editMessageCaption(text, { reply_markup: kb.reply_markup });
+  } catch (e) {
+    try {
+      await ctx.editMessageText(text, kb);
+    } catch (e2) {
+      await ctx.reply(text, kb);
+    }
+  }
+});
+
+bot.action('booking_support', async (ctx) => {
+  await ctx.answerCbQuery();
+  startSupportSession(ctx.from.id);
+  await ctx.reply(
+    '💬 Чат с персоналом\n\nОпишите вашу просьбу — передадим сотруднику:',
+    Markup.inlineKeyboard([[Markup.button.callback('❌ Отмена', 'support_cancel')]])
+  );
+});
+
 // --- ROOMS ---
 const ROOMS = [
-  { name: 'VIP-кабинка 18 персон', price_hour: 3900, price_min: 65, capacity: 18, desc: 'Большая VIP-кабинка для шумной компании. Полное оборудование, премиум звук.', photo: 'vip18.jpg' },
-  { name: 'VIP-кабинка 10 персон', price_hour: 3000, price_min: 50, capacity: 10, desc: 'Залы с уникальным дизайном для больших компаний. 2 комнаты.', photo: 'vip10.jpg' },
-  { name: 'Кабинка 8 персон', price_hour: 2700, price_min: 45, capacity: 8, desc: 'Уютные залы для семейных и корпоративных мероприятий. 5 комнат.', photo: 'room8.jpg' },
+  {
+    id: 'r1', name: 'Комната 1', capacity: 8, price_hour: 2700, price_min: 45,
+    desc: 'Уютная комната для небольших компаний.',
+    photos: [
+      'rooms/комната 1 до 8 человек/2025-11-06 20.09.27.jpg',
+      'rooms/комната 1 до 8 человек/2025-11-06 20.09.36.jpg',
+      'rooms/комната 1 до 8 человек/2025-11-06 20.09.48.jpg',
+      'rooms/комната 1 до 8 человек/2025-11-06 20.09.57.jpg',
+      'rooms/комната 1 до 8 человек/2025-11-06 20.11.24.jpg',
+      'rooms/комната 1 до 8 человек/2025-11-06 20.11.42.jpg',
+      'rooms/комната 1 до 8 человек/2025-11-06 20.11.49.jpg',
+    ],
+  },
+  {
+    id: 'r2', name: 'Комната 2', capacity: 10, price_hour: 3000, price_min: 50,
+    desc: 'Просторная комната для компании до 10 человек.',
+    photos: [
+      'rooms/комната 2 до 10 человек/2025-11-06 20.15.47.jpg',
+      'rooms/комната 2 до 10 человек/2025-11-06 20.15.54.jpg',
+      'rooms/комната 2 до 10 человек/2025-11-06 20.16.20.jpg',
+      'rooms/комната 2 до 10 человек/2025-11-06 20.16.28.jpg',
+    ],
+  },
+  {
+    id: 'r3', name: 'Комната 3', capacity: 8, price_hour: 2700, price_min: 45,
+    desc: 'Уютная комната для небольших компаний.',
+    photos: [
+      'rooms/комната 3 до 8 человек/2025-11-06 20.19.34.jpg',
+      'rooms/комната 3 до 8 человек/2025-11-06 20.19.39.jpg',
+    ],
+  },
+  {
+    id: 'r4', name: 'Комната 4', capacity: 10, price_hour: 3000, price_min: 50,
+    desc: 'Просторная комната для компании до 10 человек.',
+    photos: [
+      'rooms/комната 4 до 10 человек/2025-11-06 20.17.52.jpg',
+      'rooms/комната 4 до 10 человек/2025-11-06 20.17.58.jpg',
+      'rooms/комната 4 до 10 человек/2025-11-06 20.18.02.jpg',
+      'rooms/комната 4 до 10 человек/2025-11-06 20.18.13.jpg',
+      'rooms/комната 4 до 10 человек/2025-11-06 20.18.22.jpg',
+    ],
+  },
+  {
+    id: 'r5', name: 'Комната до 18 человек', capacity: 18, price_hour: 3900, price_min: 65,
+    desc: 'Большая комната для шумных компаний. Премиум-оборудование.',
+    photos: [
+      'rooms/комната до 18 человек/1.jpg',
+      'rooms/комната до 18 человек/2.jpg',
+      'rooms/комната до 18 человек/3.jpg',
+    ],
+  },
 ];
 
 bot.action('book_rooms', async (ctx) => {
   await ctx.answerCbQuery();
-  const buttons = ROOMS.map(r => [
-    Markup.button.callback(
-      `${r.name}\n👥 до ${r.capacity} чел · ${r.price_hour}₽/ч`,
-      `roominfo_${r.name}`
-    ),
-  ]);
-  await ctx.reply('🛏️ Выберите комнату:', Markup.inlineKeyboard(buttons));
+  const buttons = [];
+  for (let i = 0; i < ROOMS.length; i += 2) {
+    const row = [Markup.button.callback(
+      `${ROOMS[i].name} · до ${ROOMS[i].capacity} чел.`, `roomcard_${ROOMS[i].id}_0`
+    )];
+    if (ROOMS[i + 1]) row.push(Markup.button.callback(
+      `${ROOMS[i + 1].name} · до ${ROOMS[i + 1].capacity} чел.`, `roomcard_${ROOMS[i + 1].id}_0`
+    ));
+    buttons.push(row);
+  }
+  buttons.push([Markup.button.callback('◀️ Назад', 'back_to_booking')]);
+  const msg = '🛏️ КОМНАТЫ\n\nВыберите комнату:';
+  try {
+    await ctx.editMessageCaption(msg, { reply_markup: Markup.inlineKeyboard(buttons).reply_markup });
+  } catch (e) {
+    try {
+      await ctx.editMessageText(msg, Markup.inlineKeyboard(buttons));
+    } catch (e2) {
+      await ctx.reply(msg, Markup.inlineKeyboard(buttons));
+    }
+  }
 });
 
-bot.action(/^roominfo_(.+)$/, async (ctx) => {
+bot.action(/^roomcard_(r\d+)_(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  const roomName = ctx.match[1];
-  const room = ROOMS.find(r => r.name === roomName);
+  const roomId = ctx.match[1];
+  const photoIdx = parseInt(ctx.match[2]);
+  const room = ROOMS.find(r => r.id === roomId);
   if (!room) return;
 
-  const text =
+  const total = room.photos.length;
+  const idx = Math.max(0, Math.min(photoIdx, total - 1));
+  const photoUrl = buildPhotoUrl(room.photos[idx]);
+
+  const caption =
     `🎤 ${room.name}\n` +
     `👥 До ${room.capacity} человек\n` +
     `💰 ${room.price_hour}₽/час (${room.price_min}₽/мин)\n\n` +
     room.desc;
 
-  const roomKb = Markup.inlineKeyboard([
-    [Markup.button.callback('📅 ЗАБРОНИРОВАТЬ', `bookroom_${room.name}`)],
+  const prevIdx = idx > 0 ? idx - 1 : total - 1;
+  const nextIdx = idx < total - 1 ? idx + 1 : 0;
+  const keyboard = Markup.inlineKeyboard([
+    ...(total > 1 ? [[
+      Markup.button.callback('◀️', `roomcard_${roomId}_${prevIdx}`),
+      Markup.button.callback(`${idx + 1}/${total}`, 'cal_noop'),
+      Markup.button.callback('▶️', `roomcard_${roomId}_${nextIdx}`),
+    ]] : []),
+    [Markup.button.callback('📅 ЗАБРОНИРОВАТЬ', `bookroom_${roomId}`)],
     [Markup.button.callback('◀️ Назад к комнатам', 'book_rooms')],
   ]);
-  try {
-    await ctx.replyWithPhoto(
-      { url: `${PHOTO_BASE}/${room.photo}` },
-      { caption: text, ...roomKb }
-    );
-  } catch (e) {
-    await ctx.reply(text, roomKb);
+
+  const isPhotoMsg = !!(ctx.callbackQuery?.message?.photo);
+  if (isPhotoMsg) {
+    try {
+      await ctx.editMessageMedia(
+        { type: 'photo', media: photoUrl, caption },
+        { reply_markup: keyboard.reply_markup }
+      );
+    } catch (e) {
+      await ctx.editMessageCaption(caption, { reply_markup: keyboard.reply_markup }).catch(() => {});
+    }
+  } else {
+    try {
+      await ctx.replyWithPhoto({ url: photoUrl }, { caption, ...keyboard });
+    } catch (e) {
+      await ctx.reply(caption, keyboard);
+    }
   }
 });
 
 bot.action(/^bookroom_(.+)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  const roomName = ctx.match[1];
+  const roomId = ctx.match[1];
+  const room = ROOMS.find(r => r.id === roomId);
+  const roomName = room ? room.name : roomId;
   const session = getSession(ctx.from.id);
   session.room = roomName;
 
@@ -1414,32 +1575,98 @@ bot.action(/^bookroom_(.+)$/, async (ctx) => {
 });
 
 // --- GENERAL HALL ---
+const HALL_PHOTOS = [
+  'rooms/общий зал/1.jpg',
+  'rooms/общий зал/2.jpg',
+  'rooms/общий зал/3.jpg',
+];
 const TABLES = [
-  { id: 1, desc: 'у сцены' }, { id: 2, desc: 'у сцены' },
-  { id: 3, desc: 'центр зала' }, { id: 4, desc: 'центр зала' },
-  { id: 5, desc: 'у окна' }, { id: 6, desc: 'у окна' },
-  { id: 7, desc: 'у бара' }, { id: 8, desc: 'у бара' },
+  { id: 't1', name: 'Стол 1', capacity: 10, desc: 'у сцены', photos: HALL_PHOTOS },
+  { id: 't2', name: 'Стол 2', capacity: 10, desc: 'у сцены', photos: HALL_PHOTOS },
+  { id: 't3', name: 'Стол 3', capacity: 5, desc: 'центр зала', photos: HALL_PHOTOS },
+  { id: 't4', name: 'Стол 4', capacity: 5, desc: 'центр зала', photos: HALL_PHOTOS },
+  { id: 't5', name: 'Стол 5', capacity: 5, desc: 'у окна', photos: HALL_PHOTOS },
+  { id: 't6', name: 'Стол 6', capacity: 5, desc: 'у окна', photos: HALL_PHOTOS },
 ];
 
 bot.action('book_hall', async (ctx) => {
   await ctx.answerCbQuery();
   const buttons = [];
   for (let i = 0; i < TABLES.length; i += 2) {
-    const row = [Markup.button.callback(`🪑 ${TABLES[i].id} (${TABLES[i].desc})`, `booktable_${TABLES[i].id}`)];
-    if (TABLES[i + 1]) row.push(Markup.button.callback(`🪑 ${TABLES[i + 1].id} (${TABLES[i + 1].desc})`, `booktable_${TABLES[i + 1].id}`));
+    const row = [Markup.button.callback(
+      `🪑 ${TABLES[i].name} · до ${TABLES[i].capacity} чел.`, `tablecard_${TABLES[i].id}_0`
+    )];
+    if (TABLES[i + 1]) row.push(Markup.button.callback(
+      `🪑 ${TABLES[i + 1].name} · до ${TABLES[i + 1].capacity} чел.`, `tablecard_${TABLES[i + 1].id}_0`
+    ));
     buttons.push(row);
   }
-  await ctx.reply(
-    '🍽️ ОБЩИЙ ЗАЛ — 500₽ за песню\n👥 До 40 человек\n🎤 40 000+ композиций\n\nВыберите стол:',
-    Markup.inlineKeyboard(buttons)
-  );
+  buttons.push([Markup.button.callback('◀️ Назад', 'back_to_booking')]);
+  const msg = '🍽️ ОБЩИЙ ЗАЛ — 500₽ за песню\n👥 До 40 человек\n🎤 40 000+ композиций\n\nВыберите стол:';
+  try {
+    await ctx.editMessageCaption(msg, { reply_markup: Markup.inlineKeyboard(buttons).reply_markup });
+  } catch (e) {
+    try {
+      await ctx.editMessageText(msg, Markup.inlineKeyboard(buttons));
+    } catch (e2) {
+      await ctx.reply(msg, Markup.inlineKeyboard(buttons));
+    }
+  }
 });
 
-bot.action(/^booktable_(\d+)$/, async (ctx) => {
+bot.action(/^tablecard_(t\d+)_(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const tableId = ctx.match[1];
-  const table = TABLES.find(t => t.id === parseInt(tableId));
-  const place = `Стол ${tableId} (${table?.desc || ''}) в общем зале`;
+  const photoIdx = parseInt(ctx.match[2]);
+  const table = TABLES.find(t => t.id === tableId);
+  if (!table) return;
+
+  const total = table.photos.length;
+  const idx = Math.max(0, Math.min(photoIdx, total - 1));
+  const photoUrl = buildPhotoUrl(table.photos[idx]);
+
+  const caption =
+    `🪑 ${table.name}\n` +
+    `👥 До ${table.capacity} человек\n` +
+    `📍 ${table.desc}\n\n` +
+    `500₽ за песню`;
+
+  const prevIdx = idx > 0 ? idx - 1 : total - 1;
+  const nextIdx = idx < total - 1 ? idx + 1 : 0;
+  const keyboard = Markup.inlineKeyboard([
+    ...(total > 1 ? [[
+      Markup.button.callback('◀️', `tablecard_${tableId}_${prevIdx}`),
+      Markup.button.callback(`${idx + 1}/${total}`, 'cal_noop'),
+      Markup.button.callback('▶️', `tablecard_${tableId}_${nextIdx}`),
+    ]] : []),
+    [Markup.button.callback('📅 ЗАБРОНИРОВАТЬ', `booktable_${tableId}`)],
+    [Markup.button.callback('◀️ Назад к залу', 'book_hall')],
+  ]);
+
+  const isPhotoMsg = !!(ctx.callbackQuery?.message?.photo);
+  if (isPhotoMsg) {
+    try {
+      await ctx.editMessageMedia(
+        { type: 'photo', media: photoUrl, caption },
+        { reply_markup: keyboard.reply_markup }
+      );
+    } catch (e) {
+      await ctx.editMessageCaption(caption, { reply_markup: keyboard.reply_markup }).catch(() => {});
+    }
+  } else {
+    try {
+      await ctx.replyWithPhoto({ url: photoUrl }, { caption, ...keyboard });
+    } catch (e) {
+      await ctx.reply(caption, keyboard);
+    }
+  }
+});
+
+bot.action(/^booktable_(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const tableId = ctx.match[1];
+  const table = TABLES.find(t => t.id === tableId);
+  const place = table ? `${table.name} (${table.desc}) в общем зале` : `Стол ${tableId} в общем зале`;
   const session = getSession(ctx.from.id);
   session.room = place;
 
@@ -1520,15 +1747,14 @@ bot.action(/^time_(\d{2}:\d{2})$/, async (ctx) => {
     await ctx.editMessageText(`📅 ${session.room}\n🗓 ${displayDate} в ${timeStr}\n\nОформляю бронирование...`);
   } catch (e) {}
 
-  startBookingSession(ctx.from.id, session.room, session.date, timeStr);
+  const newSession = startBookingSession(ctx.from.id, session.room, session.date, timeStr);
 
   try {
     await ctx.sendChatAction('typing');
-    const aiReply = await callOpenRouter(getSession(ctx.from.id).messages);
-    getSession(ctx.from.id).messages.push({ role: 'assistant', content: aiReply });
-    await ctx.reply('🤖 ' + aiReply, Markup.inlineKeyboard([
-      [Markup.button.callback('❌ Отменить бронирование', 'cancel_booking')],
-    ]));
+    const aiReply = await callOpenRouter(newSession.messages);
+    newSession.messages.push({ role: 'assistant', content: aiReply });
+    // Route through handleBookingReply — same chain as text messages
+    await handleBookingReply(ctx, aiReply, newSession);
   } catch (e) {
     console.error('AI time_ start error:', e.message);
     await ctx.reply(`📅 Бронирование: ${session.room}\n\nПозвоните: 📞 8 (812) 401-47-45`, mainKeyboard);
@@ -1579,8 +1805,8 @@ bot.action(/^precat_(.+)$/, async (ctx) => {
     return;
   }
 
-  const cat = CAT_TO_CODE[catKey];
-  if (!cat) { await ctx.reply('Категория не найдена'); return; }
+  // Support both full name keys ('Классические коктейли') and short code keys ('ck')
+  const cat = CAT_TO_CODE[catKey] || catKey;
 
   try {
     const { rows } = await pool.query(
@@ -1708,33 +1934,122 @@ bot.action('booking_done', async (ctx) => {
   await ctx.reply('👍 Отлично! Ждём вас в 7Sky!', mainKeyboard);
 });
 
+// Гость подтверждает добавление корзины как предзаказ
+bot.action(/^cart_confirm_(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const bookingId = parseInt(ctx.match[1]);
+  const session = getSession(ctx.from.id);
+  const cart = getCart(ctx.from.id);
+  const bookingData = session.pendingBookingData || {};
+
+  if (cart.length > 0) {
+    const total = cartTotal(ctx.from.id);
+    await pool.query(
+      `INSERT INTO orders (user_id, booking_id, items, total) VALUES ($1, $2, $3, $4)`,
+      [ctx.from.id, bookingId, JSON.stringify(cart), total]
+    ).catch(e => console.error('cart_confirm orders insert:', e.message));
+    await pool.query(
+      `UPDATE bookings SET preorder_items = $1, preorder_total = $2 WHERE id = $3`,
+      [JSON.stringify(cart), total, bookingId]
+    ).catch(e => console.error('cart_confirm bookings update:', e.message));
+  }
+
+  const ticketId = await createBookingTicket(ctx.from, bookingId, bookingData, session.room, cart);
+  if (ticketId) session.ticketId = ticketId;
+  clearCart(ctx.from.id);
+
+  await ctx.reply(
+    `✅ Заявка с предзаказом отправлена!\n\n🟡 Ожидает подтверждения\nМенеджер свяжется с вами.`,
+    mainKeyboard
+  );
+});
+
+// Гость отказывается от предзаказа
+bot.action(/^cart_skip_(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const bookingId = parseInt(ctx.match[1]);
+  const session = getSession(ctx.from.id);
+  const bookingData = session.pendingBookingData || {};
+
+  const ticketId = await createBookingTicket(ctx.from, bookingId, bookingData, session.room, null);
+  if (ticketId) session.ticketId = ticketId;
+
+  await ctx.reply(
+    `✅ Заявка отправлена!\n\n🟡 Ожидает подтверждения\nМенеджер свяжется с вами.`,
+    mainKeyboard
+  );
+});
+
 // ============ КАЛЬЯН ============
 const HOOKAHS = [
-  { name: 'Классический кальян', desc: 'Аль-Фахер, мягкий вкус, фруктовые миксы', price: 1500, photo: 'hookah1.jpg' },
-  { name: 'Премиум кальян', desc: 'Танжер, крепкие табаки, авторские миксы', price: 2000, photo: 'hookah2.jpg' },
-  { name: 'Авторский кальян', desc: 'Серая Мышь, эксклюзивные вкусы от нашего мастера', price: 2500, photo: 'hookah3.jpg' },
+  { id: 'h1', name: 'Классический кальян', desc: 'Аль-Фахер, мягкий вкус, фруктовые миксы', price: 2997, photo: 'кальян/классический кальян.jpg' },
+  { id: 'h2', name: 'Кальян на грейпфруте', desc: 'Освежающий вкус грейпфрута, лёгкий дым', price: 3774, photo: 'кальян/кальян на грейпфруте.png' },
+  { id: 'h3', name: 'Кальян на ананасе', desc: 'Экзотический сладкий вкус, насыщенный дым', price: 4474, photo: 'кальян/кальян на ананасе.png' },
 ];
+
+function hookahListKeyboard() {
+  return Markup.inlineKeyboard(
+    HOOKAHS.map(h => [Markup.button.callback(`🔥 ${h.name} — ${h.price}₽`, `hookah_${h.id}`)])
+  );
+}
 
 bot.hears('🔥 Кальян', async (ctx) => {
   endSession(ctx.from.id);
   try {
     await ctx.replyWithPhoto(
       { url: `${PHOTO_BASE}/banner_hookah.png` },
-      { caption: '🔥 КАЛЬЯН — выберите вариант:' }
+      { caption: '🔥 КАЛЬЯН\n\nВыберите вариант:', ...hookahListKeyboard() }
     );
   } catch (e) {
-    await ctx.reply('🔥 КАЛЬЯН — выберите вариант:');
+    await ctx.reply('🔥 КАЛЬЯН\n\nВыберите вариант:', hookahListKeyboard());
   }
-  for (const h of HOOKAHS) {
-    await ctx.replyWithPhoto(
-      { url: `${PHOTO_BASE}/${h.photo}` },
-      {
-        caption: `🔥 ${h.name}\n${h.desc}\n💰 ${h.price}₽`,
-        ...Markup.inlineKeyboard([
-          [Markup.button.callback(`➕ В КОРЗИНУ (${h.price}₽)`, `add_${h.name}_${h.price}`)],
-        ]),
-      }
+});
+
+bot.action(/^hookah_(h\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const hookahId = ctx.match[1];
+  const h = HOOKAHS.find(x => x.id === hookahId);
+  if (!h) return;
+
+  const caption = `🔥 ${h.name}\n\n${h.desc}\n\n💰 ${h.price}₽`;
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback(`➕ В КОРЗИНУ (${h.price}₽)`, `add_${h.name}_${h.price}`)],
+    [Markup.button.callback('◀️ Назад к кальяну', 'hookah_back')],
+  ]);
+
+  const isPhotoMsg = !!(ctx.callbackQuery?.message?.photo);
+  if (isPhotoMsg) {
+    try {
+      await ctx.editMessageMedia(
+        { type: 'photo', media: buildPhotoUrl(h.photo), caption },
+        { reply_markup: keyboard.reply_markup }
+      );
+    } catch (e) {
+      await ctx.editMessageCaption(caption, { reply_markup: keyboard.reply_markup }).catch(() => {});
+    }
+  } else {
+    try {
+      await ctx.replyWithPhoto({ url: buildPhotoUrl(h.photo) }, { caption, ...keyboard });
+    } catch (e) {
+      await ctx.reply(caption, keyboard);
+    }
+  }
+});
+
+bot.action('hookah_back', async (ctx) => {
+  await ctx.answerCbQuery();
+  const caption = '🔥 КАЛЬЯН\n\nВыберите вариант:';
+  try {
+    await ctx.editMessageMedia(
+      { type: 'photo', media: `${PHOTO_BASE}/banner_hookah.png`, caption },
+      { reply_markup: hookahListKeyboard().reply_markup }
     );
+  } catch (e) {
+    try {
+      await ctx.editMessageCaption(caption, { reply_markup: hookahListKeyboard().reply_markup });
+    } catch (e2) {
+      await ctx.reply(caption, hookahListKeyboard());
+    }
   }
 });
 
@@ -1876,71 +2191,24 @@ bot.action('support_cancel', async (ctx) => {
 bot.hears('👤 Профиль', async (ctx) => {
   endSession(ctx.from.id);
 
-  const [profile, lastBooking, visitHistory, recentOrders] = await Promise.all([
+  const [profile, bookingCount] = await Promise.all([
     getUserProfile(ctx.from.id),
-    getLastBooking(ctx.from.id),
     pool.query(
-      `SELECT action, visited_at FROM visit_log WHERE user_id = $1 ORDER BY visited_at DESC LIMIT 5`,
+      `SELECT COUNT(*) as cnt FROM bookings WHERE user_id = $1`,
       [ctx.from.id]
-    ).then(r => r.rows).catch(() => []),
-    pool.query(
-      `SELECT total, status, created_at FROM orders WHERE user_id = $1 ORDER BY created_at DESC LIMIT 3`,
-      [ctx.from.id]
-    ).then(r => r.rows).catch(() => []),
+    ).then(r => parseInt(r.rows[0]?.cnt || 0)).catch(() => 0),
   ]);
 
+  const name = profile?.first_name || ctx.from.first_name || 'не указано';
+  const username = profile?.username || ctx.from.username;
+
   let text = '👤 ВАШ ПРОФИЛЬ\n\n';
-  if (profile) {
-    text += `Имя: ${profile.first_name || ctx.from.first_name || 'не указано'}\n`;
-    if (profile.username) text += `@${profile.username}\n`;
-    text += `📊 Визитов: ${profile.visits || 1}\n`;
-    if (profile.first_seen) {
-      const d = new Date(profile.first_seen);
-      text += `📅 С нами с: ${d.toLocaleDateString('ru-RU')}\n`;
-    }
-  } else {
-    text += `Имя: ${ctx.from.first_name || 'не указано'}\n`;
-  }
-
-  text += '\n';
-
-  if (lastBooking) {
-    text += `🏠 Последняя бронь: ${lastBooking.room_name || lastBooking.room_type || '?'}`;
-    if (lastBooking.booking_date) text += `, ${lastBooking.booking_date}`;
-    if (lastBooking.guests_count) text += `, ${lastBooking.guests_count} чел.`;
-    text += `\n📋 Статус: ${lastBooking.status || '?'}\n`;
-  } else {
-    text += '📋 Бронирований пока нет\n';
-  }
-
-  // Feature 1: Visit log section
-  if (visitHistory.length > 0) {
-    const actionLabels = { start: '🚪 Вход', booking: '📅 Бронь', preorder: '🛒 Предзаказ' };
-    text += '\n📆 ИСТОРИЯ ПОСЕЩЕНИЙ\n';
-    visitHistory.forEach(v => {
-      const d = new Date(v.visited_at);
-      const dateStr =
-        d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) + ' ' +
-        d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-      text += `• ${actionLabels[v.action] || v.action} — ${dateStr}\n`;
-    });
-  }
-
-  // Feature 1: Recent orders / bills section
-  if (recentOrders.length > 0) {
-    const statusLabels = { pending: '⏳ ожидает', paid: '✅ оплачен', cancelled: '❌ отменён' };
-    text += '\n🛒 СЧЕТА\n';
-    recentOrders.forEach(o => {
-      const d = new Date(o.created_at);
-      const dateStr = d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
-      text += `• ${dateStr} — ${o.total}₽ [${statusLabels[o.status] || o.status}]\n`;
-    });
-  }
+  text += `Имя: ${name}\n`;
+  if (username) text += `@${username}\n`;
+  text += `\n📊 Вы посещали нас ${bookingCount} раз`;
 
   await ctx.reply(text, Markup.inlineKeyboard([
     [Markup.button.callback('🆘 ВЫЗВАТЬ ПОМОЩНИКА', 'start_help')],
-    [Markup.button.callback('📋 ИСТОРИЯ БРОНЕЙ', 'booking_history')],
-    [Markup.button.url('🚕 ЯНДЕКС ТАКСИ', 'https://taxi.yandex.ru/')], // Feature 5
   ]));
 });
 
@@ -2105,6 +2373,51 @@ bot.on('message', async (ctx, next) => {
 });
 
 // Персонал закрывает тикет (по ticketId)
+// Персонал подтверждает или отклоняет бронирование
+bot.action(/^confirm_booking_(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery('Бронь подтверждена ✅');
+  const ticketId = parseInt(ctx.match[1]);
+  try {
+    const { rows } = await pool.query(
+      `UPDATE support_tickets SET status = 'confirmed' WHERE id = $1 RETURNING user_id`,
+      [ticketId]
+    );
+    if (rows[0]) {
+      await bot.telegram.sendMessage(rows[0].user_id,
+        `✅ Ваша бронь #${ticketId} подтверждена!\n\nДо встречи в 7Sky 🎤`,
+        mainKeyboard
+      ).catch(() => {});
+    }
+    const now = new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' });
+    await ctx.editMessageText(
+      (ctx.callbackQuery.message.text || '') + `\n\n✅ ПОДТВЕРЖДЕНО — ${now}`,
+      { reply_markup: Markup.inlineKeyboard([[Markup.button.callback(`✏️ Написать гостю #${ticketId}`, `reply_ticket_${ticketId}`)]]).reply_markup }
+    ).catch(() => {});
+  } catch (e) { console.error('confirm_booking error:', e.message); }
+});
+
+bot.action(/^reject_booking_(\d+)$/, async (ctx) => {
+  await ctx.answerCbQuery('Бронь отклонена ❌');
+  const ticketId = parseInt(ctx.match[1]);
+  try {
+    const { rows } = await pool.query(
+      `UPDATE support_tickets SET status = 'closed' WHERE id = $1 RETURNING user_id`,
+      [ticketId]
+    );
+    if (rows[0]) {
+      await bot.telegram.sendMessage(rows[0].user_id,
+        `❌ Ваша бронь #${ticketId} отклонена.\n\nСвяжитесь с нами: 📞 8 (812) 401-47-45`,
+        mainKeyboard
+      ).catch(() => {});
+    }
+    const now = new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' });
+    await ctx.editMessageText(
+      (ctx.callbackQuery.message.text || '') + `\n\n❌ ОТКЛОНЕНО — ${now}`,
+      { reply_markup: Markup.inlineKeyboard([[Markup.button.callback(`✏️ Написать гостю #${ticketId}`, `reply_ticket_${ticketId}`)]]).reply_markup }
+    ).catch(() => {});
+  } catch (e) { console.error('reject_booking error:', e.message); }
+});
+
 bot.action(/^close_ticket_(\d+)$/, async (ctx) => {
   await ctx.answerCbQuery('Тикет закрыт');
   const ticketId = parseInt(ctx.match[1]);
