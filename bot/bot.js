@@ -9,7 +9,7 @@ const PHOTO_BASE = process.env.PHOTO_BASE || 'https://46.173.25.198.nip.io/photo
 function buildPhotoUrl(path) {
   return PHOTO_BASE + '/' + path.split('/').map(s => encodeURIComponent(s)).join('/');
 }
-const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_KEY || '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';
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY || process.env.OPENROUTER_KEY || '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';
 const MANAGER_CHAT_ID = process.env.MANAGER_CHAT_ID || '796215905';
 const SUPPORT_CHAT_ID = process.env.SUPPORT_CHAT_ID || '-1003748230152';
 const AI_MODEL = 'anthropic/claude-3.5-haiku';
@@ -1084,7 +1084,6 @@ function buildDrinkCatsKeyboard() {
     if (cats[i + 1]) row.push(Markup.button.callback(cats[i + 1].text, cats[i + 1].data));
     rows.push(row);
   }
-  rows.push([Markup.button.callback('◀️ Назад', 'main_menu')]);
   return Markup.inlineKeyboard(rows);
 }
 
@@ -1175,6 +1174,9 @@ function buildDrinkGrid(drinks, page, totalPages, cat, sub = null) {
     if (page < totalPages - 1) nav.push(Markup.button.callback('▶️', `${pgBase}_${page + 1}`));
     buttons.push(nav);
   }
+  // Кнопка "Назад в Напитки" у каждой подкатегории
+  const backCb = sub ? `sub_back_${cat}` : 'dk_cats';
+  buttons.push([Markup.button.callback('◀️ Назад в Напитки', backCb)]);
   return Markup.inlineKeyboard(buttons);
 }
 
@@ -1276,6 +1278,12 @@ bot.action(/^cat_(.+)$/, async (ctx) => {
 
 // ============ DRINKS ACTION HANDLERS ============
 bot.action('dk_noop', async (ctx) => { await ctx.answerCbQuery(); });
+
+// Из подкатегории (напр. Красные вина) → назад к выбору типа (Вина)
+bot.action(/^sub_back_(\w+)$/, async (ctx) => {
+  await ctx.answerCbQuery();
+  await showSubSelection(ctx, ctx.match[1]);
+});
 
 bot.action('dk_cats', async (ctx) => {
   await ctx.answerCbQuery();
@@ -2117,7 +2125,7 @@ bot.action('food_cats', async (ctx) => {
   }
 });
 
-bot.action(/^food_(.+)$/, async (ctx) => {
+bot.action(/^food_(Салаты|Закуски|Горячее|Паста|Роллы|Десерты)$/, async (ctx) => {
   await ctx.answerCbQuery();
   const category = ctx.match[1];
 
@@ -2442,10 +2450,7 @@ bot.on('message', async (ctx, next) => {
       const guestId = rows[0].user_id;
       const context = rows[0].request_text;
 
-      // Полируем ответ через AI
-      const polished = await polishStaffResponse(context, ctx.message.text);
-
-      await bot.telegram.sendMessage(guestId, polished,
+      await bot.telegram.sendMessage(guestId, ctx.message.text,
         { reply_markup: Markup.inlineKeyboard([[Markup.button.callback('❌ Завершить чат', 'support_end_guest')]]).reply_markup }
       );
 
